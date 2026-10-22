@@ -39,17 +39,23 @@ from c in compounds where c.structure.formula == .formula(C2H6O) select c.name
   CIAAW 2021. The data are in `src/main/resources/io/kixi/sci/isotopes.txt`.
 - **Formulas**: Hill order, molar mass (standard weights, electrons not counted)
   and monoisotopic mass (main isotopes, electrons counted), composition.
-- **Molecules**: SMILES (OpenSMILES; not wildcards or non-tetrahedral chirality)
-  read to a graph with tetrahedral and double-bond stereochemistry, written back
-  as canonical SMILES, which is what equality compares. There is no aromaticity
-  model: aromatic and Kekulé forms of one molecule are different values until
-  Ki.Chem.Ext (CDK) adds one.
+- **Molecules**: SMILES (OpenSMILES; not wildcards, non-tetrahedral chirality or
+  cumulene cis/trans) read to a graph with tetrahedral and double-bond
+  stereochemistry, written back as canonical SMILES, which is what equality
+  compares. Explicit hydrogens fold into counts (`[H]/C(F)=C/F` is `F/C=C\F`),
+  stereo marks on atoms that are not stereocenters are dropped (`C[C@H](C)C` is
+  `CC(C)C`), and an unwritten bond between aromatic rings is single
+  (`c1ccccc1c1ccccc1`), as RDKit, Open Babel and CDK read them. There is no
+  aromaticity model: aromatic and Kekulé forms of one molecule are different
+  values until Ki.Chem.Ext (CDK) adds one. Up to 5,000 atoms.
 - **InChI**: checked and kept as text. Keys need the InChI library, which
   Ki.Chem.Ext brings.
 
 Functions: `element(x)`, `isotope(x)` or `isotope(element, massNumber)`,
-`formula(x)`, `molecule(x)`, `mass(x)`. Constants (CODATA 2022, as quantities):
-`speedOfLight`, `electronMass`, `protonMass`, `neutronMass`. The constants
+`formula(x)`, `molecule(x)`, `mass(x)` (text is a formula: `mass("CCO")` is
+C2O's mass; write `mass(molecule("CCO"))` for ethanol). Constants (CODATA
+2022, as quantities): `speedOfLight`, `electronMass`, `protonMass`,
+`neutronMass`. The constants
 whose units Ki.Core does not have yet (Avogadro, Boltzmann, Planck, the gas
 constant, Faraday, the elementary charge) wait for those units.
 
