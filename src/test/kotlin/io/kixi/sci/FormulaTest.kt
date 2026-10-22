@@ -54,6 +54,9 @@ class FormulaTest : FunSpec({
         Formula.parse("NH4+") shouldNotBe Formula.parse("NH4")
         mass("NH4+") shouldBe mass("NH4")                                         // electrons are not weighed
         Formula.parse("NH4+").monoisotopicMass shouldNotBe Formula.parse("NH4").monoisotopicMass
+        Formula.parse("SO4 2-") shouldBe Formula.parse("SO4^2-")                    // a charge after a space
+        Formula.parse("NH4 +") shouldBe Formula.parse("NH4+")
+        Formula.parse("Fe 3+").charge shouldBe 3
     }
 
     test("symbol case matters") {
@@ -76,6 +79,7 @@ class FormulaTest : FunSpec({
         }
         test("an unknown element is named") { shouldThrow<SciException> { Formula.parse("NaCk") }.message shouldContain "Ck" }
         test("an overflowing count") { shouldThrow<SciException> { Formula.parse("C2147483647C2") }.message shouldContain "too large" }
+        test("groups nested too deep") { shouldThrow<SciException> { Formula.parse("(".repeat(5000) + "H" + ")".repeat(5000)) }.message shouldContain "nested" }
     }
 
     test("nominal masses") {

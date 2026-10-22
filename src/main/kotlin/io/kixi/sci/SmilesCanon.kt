@@ -30,18 +30,70 @@ internal object SmilesCanon {
     /** The search gives up beyond this many leaves rather than return a string that may not be canonical. */
     const val MAX_LEAVES: Int = 20_000
 
+    /**
+     * The canonical SMILES of [g]: each connected component canonicalized on its own,
+     * the component strings sorted and joined with dots (`[Na+].[Cl-]`). Searching the
+     * components one by one keeps many identical parts (a salt's counterions, waters)
+     * from multiplying the search.
+     */
     fun canonical(g: SGraph): Result {
-        val n = g.n
-        val initial = initialCells(g)
+        val comps = components(g)
+        if (comps.size == 1) return single(g)
+        val parts = comps.map { atoms ->
+            val (sub, global) = subgraph(g, atoms)
+            val r = single(sub)
+            r.smiles to IntArray(r.writeOrder.size) { global[r.writeOrder[it]] }
+        }.sortedWith(compareBy { it.first })
+        return Result(parts.joinToString(".") { it.first }, parts.flatMap { it.second.toList() }.toIntArray())
+    }
+
+    private fun single(g: SGraph): Result {
         val search = Search(g)
-        search.run(initial, IntArray(0))
+        search.run(initialCells(g), IntArray(0))
         return search.best!!.let { Result(it.smiles, it.order) }
+    }
+
+    /** The atoms of each connected component, each list ascending. */
+    private fun components(g: SGraph): List<List<Int>> {
+        val comp = IntArray(g.n) { -1 }
+        val out = ArrayList<List<Int>>()
+        for (s in 0 until g.n) {
+            if (comp[s] >= 0) continue
+            val list = ArrayList<Int>()
+            val queue = ArrayDeque<Int>()
+            comp[s] = out.size; queue.addLast(s)
+            while (queue.isNotEmpty()) {
+                val v = queue.removeFirst()
+                list.add(v)
+                for (w in g.nbr[v]) if (comp[w] < 0) { comp[w] = out.size; queue.addLast(w) }
+            }
+            out.add(list.sorted())
+        }
+        return out
+    }
+
+    /** The graph of [atoms] alone, renumbered, and each new atom's index in [g]. */
+    private fun subgraph(g: SGraph, atoms: List<Int>): Pair<SGraph, IntArray> {
+        val map = IntArray(g.n) { -1 }
+        for ((i, a) in atoms.withIndex()) map[a] = i
+        val subAtoms = atoms.map { g.atoms[it].renumbered(map) }
+        val bondMap = IntArray(g.bonds.size) { -1 }
+        val subBonds = ArrayList<SBond>()
+        for ((i, b) in g.bonds.withIndex()) {
+            if (map[b.a] < 0) continue
+            bondMap[i] = subBonds.size
+            subBonds.add(SBond(map[b.a], map[b.b], b.order, b.explicit).also { it.upB = b.upB })
+        }
+        val subStereo = g.stereo.filter { map[it.d1] >= 0 }.map { st ->
+            DbStereo(bondMap[st.bond], map[st.d1], map[st.d2], st.side1.mapKeys { map[it.key] }, st.side2.mapKeys { map[it.key] })
+        }
+        return SGraph(subAtoms, subBonds, subStereo) to atoms.toIntArray()
     }
 
     // ------------------------------------------------------------------ partitions
 
     /** Cell ids by count-rank: an atom's id is the number of atoms in earlier cells. */
-    private fun initialCells(g: SGraph): IntArray {
+    internal fun initialCells(g: SGraph): IntArray {
         val inv = Array(g.n) { a ->
             val x = g.atoms[a]
             // Degree first: terminal atoms rank lowest, so a string starts at a chain end (CCO, not C(C)O).
@@ -230,8 +282,29 @@ internal class SmilesWriter(private val g: SGraph, private val rank: IntArray) {
         val digit = HashMap<Int, Int>()
     }
 
-    private fun emit(a: Int, sb: StringBuilder, rings: RingDigits) {
-        // Recursion depth is the longest chain; SmilesReader caps the atom count.
+    /** Writes the component from [start], iteratively (a chain may be thousands of atoms long). */
+    private fun emit(start: Int, sb: StringBuilder, rings: RingDigits) {
+        writeAtom(start, sb, rings)
+        val stack = ArrayDeque<IntArray>()          // [atom, next child index, 1 when a ')' is owed]
+        stack.addLast(intArrayOf(start, 0, 0))
+        while (stack.isNotEmpty()) {
+            val top = stack.last()
+            val a = top[0]
+            if (top[2] == 1) { sb.append(')'); top[2] = 0 }
+            val kids = children[a]
+            val k = top[1]
+            if (k >= kids.size) { stack.removeLast(); continue }
+            top[1] = k + 1
+            val c = kids[k]
+            if (k < kids.size - 1) { sb.append('('); top[2] = 1 }
+            sb.append(bondText(parentBond[c], a))
+            writeAtom(c, sb, rings)
+            stack.addLast(intArrayOf(c, 0, 0))
+        }
+    }
+
+    /** An atom and its ring-bond numbers: closings first, then openings. */
+    private fun writeAtom(a: Int, sb: StringBuilder, rings: RingDigits) {
         atomText(a, sb)
         val freed = ArrayList<Int>()
         for (b in ringOrder(a)) {
@@ -249,14 +322,6 @@ internal class SmilesWriter(private val g: SGraph, private val rank: IntArray) {
             }
         }
         for (d in freed) rings.used[d] = false
-        val kids = children[a]
-        for ((k, c) in kids.withIndex()) {
-            val last = k == kids.size - 1
-            if (!last) sb.append('(')
-            sb.append(bondText(parentBond[c], a))
-            emit(c, sb, rings)
-            if (!last) sb.append(')')
-        }
     }
 
     private fun digitText(d: Int): String = if (d < 10) d.toString() else "%$d"

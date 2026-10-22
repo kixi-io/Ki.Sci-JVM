@@ -20,8 +20,16 @@ import io.kixi.uom.Unit as KiUnit
  * nothing of their own (`[H]`) are counted on their neighbors, so `[H]C([H])([H])[H]`
  * is `C`.
  *
- * Not read: wildcard atoms (`*`) and chirality other than tetrahedral (`@`, `@@`,
- * `@TH1`, `@TH2`).
+ * Stereochemistry that is not there is dropped: a center with two equivalent
+ * neighbors (`C[C@H](C)C` is `CC(C)C`) and a double bond with two equivalent
+ * substituents at one end. An unwritten bond between aromatic atoms outside a ring
+ * is single (`c1ccccc1c1ccccc1` is biphenyl), as RDKit, Open Babel and CDK read it.
+ * For a three-connected center written first (`[S@](C)(=O)CC`) the lone pair takes
+ * the implicit hydrogen's place, first, as Open Babel reads it (RDKit puts it last).
+ *
+ * Not read: wildcard atoms (`*`), chirality other than tetrahedral (`@`, `@@`,
+ * `@TH1`, `@TH2`), and the cis/trans of cumulenes (`F/C=C=C=C/F` reads as
+ * `FC=C=C=CF`).
  *
  * ## Masses
  *
@@ -117,5 +125,12 @@ public class Molecule private constructor(
         /** [parse], or null. */
         @JvmStatic
         public fun parseOrNull(smiles: String): Molecule? = try { parse(smiles) } catch (e: SciException) { null }
+
+        /**
+         * A molecule from a string this library wrote as canonical SMILES (RevDB's
+         * stored form): read, but not searched again. A change to the canonical form
+         * raises the bag's version, so stored strings stay canonical for their version.
+         */
+        internal fun ofCanonical(smiles: String): Molecule = Molecule(smiles, SmilesReader.read(smiles))
     }
 }

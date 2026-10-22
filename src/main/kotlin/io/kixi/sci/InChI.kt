@@ -36,7 +36,7 @@ public class InChI private constructor(
 
     public companion object {
         /** The letters an InChI layer may start with. */
-        private const val PREFIXES = "chqpbtmsifr"
+        private const val PREFIXES = "chqpbtmsifor"
 
         /** Checks [text] as an InChI and keeps it. Throws [SciException] with the reason. */
         @JvmStatic
@@ -50,6 +50,7 @@ public class InChI private constructor(
             if (t.any { it.isWhitespace() || it.code < 0x21 || it.code > 0x7E }) fail("Spaces or characters outside printable ASCII")
             val layers = t.substringAfter('/').split('/')
             val first = layers.first()
+            if (first.isEmpty()) fail("An empty formula layer")
             if (first.isNotEmpty() && first[0] !in PREFIXES) {
                 try { formulaOf(first) } catch (e: SciException) { fail("The formula layer '$first' is not a formula in Hill order") }
             }

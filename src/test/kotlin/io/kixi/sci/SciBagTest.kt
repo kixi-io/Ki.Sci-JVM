@@ -85,6 +85,7 @@ class SciBagTest : FunSpec({
             bad("InChI=1S/H6C2O/c1-2-3", "Hill order")
             bad("InChI=1S/C2H6O//c1", "empty layer")
             bad("InChI=1S/C2H6O c1", "Spaces")
+            bad("InChI=1S/", "empty formula layer")
         }
     }
 })

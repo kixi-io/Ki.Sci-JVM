@@ -38,6 +38,11 @@ class MoleculeTest : FunSpec({
         "CCCCCCCCCCCCCCCCCCCC", "C(C(C(C(C(C)C)C)C)C)C", "O=C=O", "[H][H]", "[H+]", "[OH-]", "B(F)(F)F", "P(=O)(O)(O)O",
         "S(=O)(=O)(O)O", "ClC(Cl)(Cl)Cl", "C1=CC=C2C(=C1)C=CC=C2", "N#Cc1ccccc1", "C=C=C", "CC(C)[C@@H](C(=O)O)N",
         "C1[C@H]2CC[C@@H]1CC2", "[C@H]1(F)CC[C@@H](F)CC1", "F/C(Cl)=C(/F)Cl", "C(/F)=C/F", "C=1CCCC=1",
+        // Found by the review: stereo alkenes on one carbonyl carbon, biphenyl without '-', a marked [H].
+        "O=C(/C=C/C)/C=C/C", "C\\C=C/C(=O)/C=C\\C", "C/C=C\\C(=O)/C=C/C", "C\\C=C/C(=O)/C=C\\c1ccccc1",
+        "C1=CC=C(C=C1)/C=C/C(=O)/C=C/C2=CC=CC=C2",                                         // dibenzylideneacetone
+        "COC1=C(C=CC(=C1)/C=C/C(=O)CC(=O)/C=C/C2=CC(=C(C=C2)O)OC)O",                         // curcumin
+        "c1ccccc1c1ccccc1", "[H]/C(F)=C/F", "F/C(/[H])=C/F", "OC(=O)C[C@H](O)[C@H](O)[C@@H](O)CC(=O)O",
     )
 
     test("every corpus SMILES writes the same canonical form in fifty other atom orders") {
@@ -119,6 +124,7 @@ class MoleculeTest : FunSpec({
             sb.append("=C")
             if (r.nextInt(3) == 0) sb.append("(").append(mark()).append(sub()).append(")")
             if (r.nextInt(4) == 0) sb.append(mark()).append(if (r.nextBoolean()) "[C@H](F)" else "[C@@H](F)")
+            if (r.nextInt(4) == 0) sb.append(mark()).append("C(=O)")                                  // a carbonyl between stereo alkenes
         }
         sb.append(mark()).append(sub())
         if (ring) sb.append("CCC1")
@@ -181,6 +187,16 @@ class MoleculeTest : FunSpec({
         canon("F[C@@H](Cl)Br") shouldBe canon("[C@H](F)(Cl)Br")                    // swapping F and H flips the symbol
         canon("F[C@H](F)Cl") shouldBe canon("F[C@@H](F)Cl")                    // not a real stereocenter
         canon("C=1CCCC=1") shouldBe canon("C1=CCCC1")
+        canon("c1ccccc1c1ccccc1") shouldBe canon("c1ccccc1-c1ccccc1")                 // an unwritten bond between rings is single
+        canon("[H]/C(F)=C/F") shouldBe canon("F/C=C\\F")                              // a marked [H] folds; its side passes to F
+        canon("[H]/C=C/F") shouldBe canon("C=CF")                                      // two hydrogens at one end: no stereo
+        canon("C[C@H](C)C") shouldBe canon("CC(C)C")                                   // not stereocenters: the marks go
+        canon("F[C@H](F)Cl") shouldBe canon("FC(F)Cl")
+        canon("C[C@H]1CCCCC1") shouldBe canon("CC1CCCCC1")
+        canon("C/C=C1CCCCC1") shouldBe canon("CC=C1CCCCC1")
+        canon("C/C=C/1\\CCCCC1") shouldBe canon("CC=C1CCCCC1")
+        canon("C[C@H](C)C[C@H](O)CC") shouldBe canon("CC(C)C[C@H](O)CC")              // one real center among others
+        canon("C[C@@H](C)C[C@H](O)CC") shouldBe canon("CC(C)C[C@H](O)CC")
         canon("F/C=C/1.F1") shouldBe canon("F/C=C/F")                          // a ring bond across a dot, marked at its opening
         canon("F/C=C1.F/1") shouldBe canon("F/C=C\\F")                         // marked at its closing: F then C, so C is up from F
     }
@@ -195,11 +211,16 @@ class MoleculeTest : FunSpec({
         canon("CO") shouldNotBe canon("C[O-]")
         canon("[CH3:1]O") shouldNotBe canon("CO")
         canon("C[S@](=O)CC") shouldNotBe canon("C[S@@](=O)CC")
+        canon("[S@](C)(=O)CC") shouldBe canon("C[S@@](=O)CC")                          // a leading lone pair comes first (Open Babel's reading)
+        // A pseudoasymmetric center keeps its mark: its two equivalent neighbors hold stereocenters.
+        canon("OC(=O)[C@H](O)[C@@H](O)[C@H](O)C(=O)O") shouldNotBe canon("OC(=O)[C@H](O)[C@H](O)[C@H](O)C(=O)O")
+        canon("C\\C=C/C(=O)/C=C\\C") shouldNotBe canon("C/C=C/C(=O)/C=C/C")         // (2Z,5Z) and (2E,5E)
+        canon("OC[C@H](O)[C@H](O)[C@H](O)CO") shouldNotBe canon("OC[C@H](O)[C@@H](O)[C@H](O)CO")   // ribitol and xylitol: C3 is pseudoasymmetric
     }
 
     test("canonical forms are plain: brackets only where needed, no bond symbols that are implied") {
         canon("C") shouldBe "C"
-        canon("[Cl-].[Na+]") shouldBe "[Na+].[Cl-]"
+        canon("[Na+].[Cl-]") shouldBe "[Cl-].[Na+]"                                   // components sorted by their strings
         canon("c1cc[nH]c1") shouldBe "c1cc[nH]c1"
         canon("OCC") shouldBe "CCO"
         canon("C-C") shouldBe "CC"
@@ -261,6 +282,28 @@ class MoleculeTest : FunSpec({
             withClue("$s took $ms ms") { (ms < 5_000) shouldBe true }
             canon(shuffled(s, Random(3))) shouldBe c
         }
+    }
+
+    test("a stored canonical form reads back, for every corpus molecule") {
+        for (s in corpus) {
+            val m = m(s)
+            withClue(s) {
+                MoleculeType.decode(MoleculeType.encode(m), 1) shouldBe m
+                MoleculeType.parse(MoleculeType.format(m)) shouldBe m
+            }
+        }
+    }
+
+    test("many identical components and long chains are quick") {
+        for (s in listOf(List(80) { "C" }.joinToString("."), List(60) { "[Na+].[Cl-]" }.joinToString("."), List(40) { "O" }.joinToString("."))) {
+            val start = System.nanoTime()
+            val c = canon(s)
+            withClue("${s.take(20)}… took ${(System.nanoTime() - start) / 1_000_000} ms") { ((System.nanoTime() - start) / 1_000_000 < 3_000) shouldBe true }
+            canon(shuffled(s, Random(5))) shouldBe c
+        }
+        val chain = "C".repeat(SmilesReader.MAX_ATOMS)
+        m(chain).heavyAtomCount shouldBe SmilesReader.MAX_ATOMS                        // no stack overflow at the limit
+        MoleculeType.decode(MoleculeType.encode(m(chain)), 1).heavyAtomCount shouldBe SmilesReader.MAX_ATOMS
     }
 
     test("a molecule too large is refused rather than slow") {

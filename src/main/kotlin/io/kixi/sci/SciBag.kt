@@ -101,8 +101,9 @@ public class SciBag : TypeBag {
         }
 
         /**
-         * The molar mass of a formula (text is read as one), a molecule or an element
-         * (its standard atomic weight), or an isotope's mass, in Da.
+         * The molar mass of a formula, a molecule or an element (its standard atomic
+         * weight), or an isotope's mass, in Da. Text is read as a formula, never as
+         * SMILES: `mass("CCO")` is C2O; write `mass(molecule("CCO"))`.
          */
         @JvmStatic
         public fun massOf(x: Any?): Quantity<*> = when (x) {
@@ -241,7 +242,7 @@ public object MoleculeType : ValueType<Molecule> {
     override fun parse(literal: String): Molecule = readLiteral(literal) { Molecule.parse(it) }
     override fun format(value: Molecule): String = ".smiles(${quoted(value.smiles)})"
     override fun encode(value: Molecule): ByteArray = value.smiles.toByteArray(Charsets.UTF_8)
-    override fun decode(bytes: ByteArray, version: Int): Molecule = Molecule.parse(String(bytes, Charsets.UTF_8))
+    override fun decode(bytes: ByteArray, version: Int): Molecule = Molecule.ofCanonical(String(bytes, Charsets.UTF_8))
     override val ordered: Boolean = true
     override fun sortKey(value: Molecule): ByteArray = encode(value)
 

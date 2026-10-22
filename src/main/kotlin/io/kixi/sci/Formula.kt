@@ -23,7 +23,9 @@ import io.kixi.uom.Unit as KiUnit
  * - A trailing charge: `NH4+`, `Cl-`, and with a magnitude after a caret, `SO4^2-`,
  *   `Fe^3+`, or in superscripts, `SO₄²⁻`. Written `Fe3+`, the 3 is a count: a
  *   magnitude needs the caret.
- * - Whitespace is ignored.
+ * - Whitespace is ignored, except that a trailing charge written after a space
+ *   (`SO4 2-`, `NH4 +`) is a charge, magnitude and all.
+ * - Groups nest at most 100 deep.
  *
  * ## Writing
  *
@@ -149,8 +151,11 @@ public class Formula private constructor(
         private val charge: Int
 
         init {
-            val sb = StringBuilder(original.length)
-            for (ch in original) {
+            // A charge after a space: "SO4 2-" is sulfate, not O42S-.
+            val spaced = Regex("""\s+(\d*)([+\-])\s*$""").find(original.trimEnd())
+            val text = if (spaced != null) original.trimEnd().substring(0, spaced.range.first) + "^" + spaced.groupValues[1] + spaced.groupValues[2] else original
+            val sb = StringBuilder(text.length)
+            for (ch in text) {
                 if (ch.isWhitespace()) continue
                 val sub = SUBSCRIPTS.indexOf(ch)
                 sb.append(if (sub >= 0) '0' + sub else ch)
@@ -202,7 +207,10 @@ public class Formula private constructor(
         private inner class Parser(private val b: String) {
             var pos = 0
 
+            var depth = 0
+
             fun sequence(closer: Char?): HashMap<Element, Int> {
+                if (++depth > 100) fail("Groups nested more than 100 deep")
                 val counts = HashMap<Element, Int>()
                 while (pos < b.length) {
                     val ch = b[pos]
@@ -213,7 +221,7 @@ public class Formula private constructor(
                             val n = count()
                             for ((e, c) in inner) counts[e] = try { Math.addExact(counts[e] ?: 0, Math.multiplyExact(c, n)) } catch (x: ArithmeticException) { fail("A count too large") }
                         }
-                        ch == closer -> { pos++; return counts }
+                        ch == closer -> { pos++; depth--; return counts }
                         ch == ')' || ch == ']' -> fail("An unmatched '$ch'")
                         ch in 'A'..'Z' -> {
                             val start = pos++

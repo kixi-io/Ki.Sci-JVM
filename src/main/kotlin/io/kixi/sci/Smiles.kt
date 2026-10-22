@@ -39,9 +39,14 @@ internal class SAtom(
 ) {
     /** Neighbors in the order the SMILES met them: atom indices, [H_MARK], [LONE_MARK]. */
     val order: MutableList<Int> = ArrayList(4)
+
+    /** A copy whose neighbor order is renumbered through [map]. */
+    fun renumbered(map: IntArray): SAtom = SAtom(z, aromatic, isotope, charge, hCount, bracket, atomClass, chiral, hasFrom).also { c ->
+        for (v in order) c.order.add(if (v >= 0) map[v] else v)
+    }
 }
 
-internal class SBond(var a: Int, var b: Int, val order: Int) {
+internal class SBond(var a: Int, var b: Int, var order: Int, val explicit: Boolean = true) {
     /** From direction marks (`/`, `\`): true when [b] is "up" from [a]; null when unmarked. */
     var upB: Boolean? = null
     fun other(x: Int): Int = if (x == a) b else a
@@ -170,7 +175,7 @@ internal object SmilesReader {
                             if (open.atom == prev) fail("A ring bond from an atom to itself", at)
                             if (open.order != 0 && pendingOrder != 0 && open.order != pendingOrder) fail("Ring bond $number has two different bond symbols", at)
                             val order = if (open.order != 0) open.order else if (pendingOrder != 0) pendingOrder else defaultOrder(open.atom, prev)
-                            val b = addBond(open.atom, prev, order, at)
+                            val b = addBond(open.atom, prev, order, at, explicit = open.order != 0 || pendingOrder != 0)
                             setMark(b, open.atom, open.mark, at)
                             setMark(b, prev, pendingMark, at)
                             val oo = atoms[open.atom].order
@@ -201,7 +206,7 @@ internal object SmilesReader {
             val idx = atoms.size
             atoms.add(atom)
             if (prev >= 0) {
-                val b = addBond(prev, idx, if (pendingOrder != 0) pendingOrder else defaultOrder(prev, idx), i)
+                val b = addBond(prev, idx, if (pendingOrder != 0) pendingOrder else defaultOrder(prev, idx), i, explicit = pendingOrder != 0)
                 setMark(b, prev, pendingMark, i)
                 atoms[prev].order.add(idx)
                 atom.order.add(prev)
@@ -211,9 +216,11 @@ internal object SmilesReader {
             return idx
         }
 
-        private fun addBond(a: Int, b: Int, order: Int, at: Int): Int {
-            for (x in bonds) if ((x.a == a && x.b == b) || (x.a == b && x.b == a)) fail("Two bonds between the same atoms", at)
-            bonds.add(SBond(a, b, order))
+        private val bonded = HashSet<Long>()
+
+        private fun addBond(a: Int, b: Int, order: Int, at: Int, explicit: Boolean): Int {
+            if (!bonded.add(minOf(a, b).toLong() shl 32 or maxOf(a, b).toLong())) fail("Two bonds between the same atoms", at)
+            bonds.add(SBond(a, b, order, explicit))
             return bonds.size - 1
         }
 
@@ -329,39 +336,60 @@ internal object SmilesReader {
 
         /** Implicit hydrogens, explicit ones folded, checks, stereo. */
         private fun finish(): SGraph {
-            var g = SGraph(atoms, bonds, emptyList())
-            for ((a, atom) in atoms.withIndex()) if (!atom.bracket) atom.hCount = implicitHydrogens(g, a)
-            g = foldHydrogens(g)
+            val g0 = SGraph(atoms, bonds, emptyList())
+            // An unwritten bond between aromatic atoms outside a ring is single (biphenyl as
+            // c1ccccc1c1ccccc1), as RDKit, Open Babel and CDK read it; OpenSMILES would make
+            // it aromatic, which outside a ring means nothing.
+            val ring = ringBonds(g0)
+            for ((b, bond) in bonds.withIndex()) if (bond.order == AROMATIC && !bond.explicit && !ring[b]) bond.order = SINGLE
+            for ((a, atom) in atoms.withIndex()) if (!atom.bracket) atom.hCount = implicitHydrogens(g0, a)
+            // Stereo double bonds are found before hydrogens fold, so a marked [H] still says which side its neighbor is on.
+            val g = foldHydrogens(g0, doubleBondStereo(g0))
             checkAromatic(g)
             for ((a, atom) in g.atoms.withIndex()) checkChiral(g, a, atom)
-            return SGraph(g.atoms, g.bonds, doubleBondStereo(g))
+            return normalizeStereo(g)
         }
 
         /**
-         * Plain explicit hydrogens (`[H]`, no isotope, charge or class, one single unmarked
-         * bond to an atom that is not hydrogen) become their neighbor's count, so
-         * `[H]C([H])([H])[H]` is `C`.
+         * Plain explicit hydrogens (`[H]`, no isotope, charge or class, one single bond
+         * to an atom that is not hydrogen) become their neighbor's count, so
+         * `[H]C([H])([H])[H]` is `C` and `[H]/C(F)=C/F` is `F/C=C\F`. A folded hydrogen
+         * leaves the [stereo] double bonds; one left with no substituent at an end (its
+         * atom now has two hydrogens) is not a stereo bond.
          */
-        private fun foldHydrogens(g: SGraph): SGraph {
+        private fun foldHydrogens(g: SGraph, stereo: List<DbStereo>): SGraph {
             val drop = BooleanArray(g.n)
             for ((a, atom) in g.atoms.withIndex()) {
                 if (atom.z != 1 || atom.isotope != 0 || atom.charge != 0 || atom.atomClass != 0 || atom.chiral != 0 || atom.hCount != 0) continue
                 if (g.nbr[a].size != 1) continue
                 val bond = g.bonds[g.nbrBond[a][0]]
                 val other = g.nbr[a][0]
-                if (bond.order != SINGLE || bond.upB != null || g.atoms[other].z == 1 || drop[other]) continue
+                if (bond.order != SINGLE || g.atoms[other].z == 1 || drop[other]) continue
                 drop[a] = true
                 val o = g.atoms[other]
                 o.hCount++
                 o.order[o.order.indexOf(a)] = H_MARK
             }
-            if (drop.none { it }) return g
+            if (drop.none { it }) return SGraph(g.atoms, g.bonds, stereo)
             val map = IntArray(g.n) { -1 }
             val kept = ArrayList<SAtom>()
             for (a in 0 until g.n) if (!drop[a]) { map[a] = kept.size; kept.add(g.atoms[a]) }
             for (atom in kept) for (k in atom.order.indices) { val v = atom.order[k]; if (v >= 0) atom.order[k] = map[v] }
-            val keptBonds = g.bonds.filter { !drop[it.a] && !drop[it.b] }.onEach { it.a = map[it.a]; it.b = map[it.b] }
-            return SGraph(kept, keptBonds, emptyList())
+            val bondMap = IntArray(g.bonds.size) { -1 }
+            val keptBonds = ArrayList<SBond>()
+            for ((i, b) in g.bonds.withIndex()) {
+                if (drop[b.a] || drop[b.b]) continue
+                bondMap[i] = keptBonds.size
+                b.a = map[b.a]; b.b = map[b.b]
+                keptBonds.add(b)
+            }
+            fun remap(side: Map<Int, Boolean>) = side.filterKeys { !drop[it] }.mapKeys { map[it.key] }
+            val keptStereo = stereo.mapNotNull { st ->
+                val s1 = remap(st.side1)
+                val s2 = remap(st.side2)
+                if (s1.isEmpty() || s2.isEmpty()) null else DbStereo(bondMap[st.bond], map[st.d1], map[st.d2], s1, s2)
+            }
+            return SGraph(kept, keptBonds, keptStereo)
         }
 
         /** Aromatic atoms and bonds must be in rings (a ring bond is any bond that is not a bridge). */
@@ -392,20 +420,43 @@ internal object SmilesReader {
             if (atom.order.size != 4) throw SciException("Internal error: chiral neighbor order ${atom.order} in SMILES '$s'")
         }
 
-        /** The stereo double bonds: a double bond with a direction-marked single bond at each end. */
+        /**
+         * The stereo double bonds: a double bond with a direction-marked single bond at
+         * each end. Marks at one end only (a carbonyl between two stereo alkenes, `=CH2`)
+         * belong to other double bonds, or to none, and say nothing about this one.
+         */
         private fun doubleBondStereo(g: SGraph): List<DbStereo> {
             val out = ArrayList<DbStereo>()
             for ((b, bond) in g.bonds.withIndex()) {
                 if (bond.order != DOUBLE) continue
-                val s1 = sides(g, bond.a, bond.b) ?: continue
-                val s2 = sides(g, bond.b, bond.a) ?: continue
-                out.add(DbStereo(b, bond.a, bond.b, s1, s2))
+                val e1 = end(g, bond.a, bond.b) ?: continue
+                val e2 = end(g, bond.b, bond.a) ?: continue
+                out.add(DbStereo(b, bond.a, bond.b, e1.sides(), e2.sides()))
             }
             return out
         }
 
-        /** The sides of [d]'s single-bonded substituents (not [other]), from their marks; null when none is marked. */
-        private fun sides(g: SGraph, d: Int, other: Int): Map<Int, Boolean>? {
+        /** One end of a double bond: [d]'s single-bonded substituents, and which are marked. */
+        private inner class End(val d: Int, val subs: List<Pair<Int, SBond>>) {
+            /** The side of each substituent, from the marks; checked, since this end is part of a stereo bond. */
+            fun sides(): Map<Int, Boolean> {
+                if (subs.size > 2) throw SciException("A double-bond atom with ${subs.size} substituents in SMILES '$s'")
+                val marked = subs.filter { it.second.upB != null }
+                val side = HashMap<Int, Boolean>()
+                for ((x, bond) in marked) side[x] = if (bond.a == d) bond.upB!! else !bond.upB!!
+                if (marked.size == 2 && side[subs[0].first] == side[subs[1].first]) {
+                    throw SciException("Both substituents of a double-bond atom are marked on the same side in SMILES '$s'")
+                }
+                if (subs.size == 2 && marked.size == 1) {
+                    val m = marked[0].first
+                    side[subs.first { it.first != m }.first] = !side[m]!!
+                }
+                return side
+            }
+        }
+
+        /** [d]'s end of its double bond to [other], or null when none of its substituents is marked. */
+        private fun end(g: SGraph, d: Int, other: Int): End? {
             val subs = ArrayList<Pair<Int, SBond>>()
             for (k in g.nbr[d].indices) {
                 val x = g.nbr[d][k]
@@ -413,20 +464,68 @@ internal object SmilesReader {
                 if (x == other || bond.order != SINGLE) continue
                 subs.add(x to bond)
             }
-            val marked = subs.filter { it.second.upB != null }
-            if (marked.isEmpty()) return null
-            if (subs.size > 2) throw SciException("A double-bond atom with ${subs.size} substituents in SMILES '$s'")
-            val side = HashMap<Int, Boolean>()
-            for ((x, bond) in marked) side[x] = if (bond.a == d) bond.upB!! else !bond.upB!!
-            if (marked.size == 2 && side[subs[0].first] == side[subs[1].first]) {
-                throw SciException("Both substituents of a double-bond atom are marked on the same side in SMILES '$s'")
+            return if (subs.none { it.second.upB != null }) null else End(d, subs)
+        }
+
+        /**
+         * Drops stereochemistry that is not there: a tetrahedral center with two
+         * equivalent neighbors (`C[C@H](C)C`, `F[C@H](F)Cl`) and a double bond with two
+         * equivalent substituents at one end (`C/C=C1CCCCC1`), so they equal the same
+         * molecule written without it. Two neighbors are equivalent when the refined
+         * partition puts them in one cell, they are bonded alike, and neither side of
+         * them away from the center holds other stereochemistry (so a pseudoasymmetric
+         * center, or cis/trans-1,4-dimethylcyclohexane, keeps its marks). Repeated until
+         * nothing changes, as dropping one element can free another.
+         */
+        private fun normalizeStereo(g: SGraph): SGraph {
+            if (g.atoms.none { it.chiral != 0 } && g.stereo.isEmpty()) return g
+            val cells = SmilesCanon.refine(g, SmilesCanon.initialCells(g))
+            var frames = g.stereo
+            var changed = true
+            while (changed) {
+                changed = false
+                fun stereoAtoms(): Set<Int> = (g.atoms.indices.filter { g.atoms[it].chiral != 0 } + frames.flatMap { listOf(it.d1, it.d2) }).toSet()
+                for ((a, atom) in g.atoms.withIndex()) {
+                    if (atom.chiral == 0) continue
+                    if (hasEquivalentPair(g, cells, a, g.nbr[a].toList(), stereoAtoms() - a)) { atom.chiral = 0; changed = true }
+                }
+                val keep = frames.filter { st ->
+                    val others = stereoAtoms() - st.d1 - st.d2
+                    !hasEquivalentPair(g, cells, st.d1, st.side1.keys.toList(), others) &&
+                            !hasEquivalentPair(g, cells, st.d2, st.side2.keys.toList(), others)
+                }
+                if (keep.size != frames.size) { frames = keep; changed = true }
             }
-            if (subs.size == 2 && marked.size == 1) {
-                val (m, _) = marked[0]
-                val u = subs.first { it.first != m }.first
-                side[u] = !side[m]!!
+            for (atom in g.atoms) if (atom.chiral == 0) atom.order.removeAll { it == H_MARK || it == LONE_MARK }
+            return SGraph(g.atoms, g.bonds, frames)
+        }
+
+        /** True when two of [center]'s [neighbors] are equivalent and carry no stereochemistry beyond [center]. */
+        private fun hasEquivalentPair(g: SGraph, cells: IntArray, center: Int, neighbors: List<Int>, stereo: Set<Int>): Boolean {
+            for (i in neighbors.indices) for (j in i + 1 until neighbors.size) {
+                val x = neighbors[i]
+                val y = neighbors[j]
+                if (cells[x] != cells[y]) continue
+                if (g.bonds[g.bondBetween(center, x)].order != g.bonds[g.bondBetween(center, y)].order) continue
+                if (!reaches(g, x, center, stereo) && !reaches(g, y, center, stereo)) return true
             }
-            return side
+            return false
+        }
+
+        /** True when the atoms reachable from [start] without passing [blocked] include one of [targets]. */
+        private fun reaches(g: SGraph, start: Int, blocked: Int, targets: Set<Int>): Boolean {
+            if (targets.isEmpty()) return false
+            val seen = BooleanArray(g.n)
+            seen[blocked] = true
+            seen[start] = true
+            val queue = ArrayDeque<Int>()
+            queue.addLast(start)
+            while (queue.isNotEmpty()) {
+                val v = queue.removeFirst()
+                if (v in targets) return true
+                for (w in g.nbr[v]) if (!seen[w]) { seen[w] = true; queue.addLast(w) }
+            }
+            return false
         }
     }
 
