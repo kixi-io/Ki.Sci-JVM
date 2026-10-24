@@ -12,7 +12,7 @@ Includes `../Ki.Core-JVM` (the only main dependency) and `../Ki.KD-JVM`, `../Ki.
 - Element and isotope data come from CIAAW 2021 and AME2020 (`isotopes.txt` is generated; see its header). Change them only from those sources, never by hand.
 - Units are not part of a bag (design 9.2, item 6): a constant whose unit Ki.Core lacks waits for Ki.Core.
 - Function and constant names are global across bags (and KQ's built-ins win in KQ): check the other bags before adding one.
-- `BagCorpus.kt` (the corpus round trip) is shared with Ki.Math-JVM's tests; keep the copies alike.
+- `BagCorpus.kt` (the corpus round trip) is shared with Ki.Math-JVM's and Ki.Bio-JVM's tests; keep the copies alike.
 
 ## Working agreements
 - Commit straight to `master`; never create a branch unless Dan asks. Code and docs in separate commits, author `dleuck <dan@kixi.io>`. Don't publish or change the version without asking.
