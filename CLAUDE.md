@@ -6,7 +6,7 @@ The `sci` type bag (Ki type bags design, sections 2 and 5.2; the design is in Ki
 Includes `../Ki.Core-JVM` (the only main dependency) and `../Ki.KD-JVM`, `../Ki.KS-JVM`, `../RevDB-JVM` (tests only). Ask before adding a dependency.
 
 ## Rules
-- The bag is `SciBag` (a class with a public no-argument constructor, listed in `META-INF/services/io.kixi.types.TypeBag`); nothing registers it. Tests reach it with `TypeBags.byName("sci")`.
+- The bag is `SciBag` (a class with a public no-argument constructor, listed in `META-INF/services/io.kixi.types.TypeBag`); nothing registers it. Its manifest, `META-INF/ki/bags/io.kixi.sci.SciBag.properties`, is what discovery reads instead of creating the bag (type bags design, 13): it says `preload=true`, and lists the bag's types, literals, functions, constants and members, so regenerate it with `TypeBags.manifestOf(bag, preload = true)` whenever a name changes (`BagCorpus` fails until it matches). Tests reach it with `TypeBags.byName("sci")`.
 - Stored encodings and sort keys never change for a released version: bump `SciBag.VERSION` and keep decoding older versions. A Molecule is stored and indexed as its canonical SMILES, so **any change to `SmilesReader`, `SmilesCanon` or `SmilesWriter` that changes a canonical string changes stored sort keys**: it needs a version bump and an index rebuild (an open question in the design, 9.4).
 - After touching the SMILES code, run `MoleculeTest`: the corpus and the two fuzz sets write each molecule in many random atom orders and check one canonical form. Add a failing SMILES to the corpus.
 - Element and isotope data come from CIAAW 2021 and AME2020 (`isotopes.txt` is generated; see its header). Change them only from those sources, never by hand.
